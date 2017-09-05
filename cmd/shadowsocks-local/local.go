@@ -13,14 +13,13 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"time"
 	"sync"
+	"time"
 
 	ss "github.com/shadowsocks/shadowsocks-go/shadowsocks"
 )
 
-var mutex *sync.Mutex = &sync.Mutex{}
-var blacklist map[string]int = make(map[string]int, 1024)
+var blacklist sync.Map = sync.Map{}
 
 var debug ss.DebugLog
 
@@ -313,9 +312,7 @@ func handleConnection(conn net.Conn) {
 		return
 	}
 
-	mutex.Lock()
-	_, ok := blacklist[addr]
-	mutex.Unlock()
+	_, ok := blacklist.Load(addr)
 	if !ok {
 		c, err := net.DialTimeout("tcp", addr, time.Millisecond*800)
 		defer func() {
@@ -324,9 +321,7 @@ func handleConnection(conn net.Conn) {
 			}
 		}()
 		if err != nil {
-			mutex.Lock()
-			blacklist[addr] = 1
-			mutex.Unlock()
+			blacklist.LoadOrStore(addr,1) 
 			err = nil
 		} else {
 			go io.Copy(conn, c)
