@@ -14,9 +14,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"sync"
 
 	ss "github.com/shadowsocks/shadowsocks-go/shadowsocks"
 )
+
+var mutex *sync.Mutex = &sync.Mutex{}
+var blacklist map[string]int = make(map[string]int, 1024)
 
 var debug ss.DebugLog
 
@@ -136,19 +140,16 @@ func getRequest(conn net.Conn) (rawaddr []byte, host string, err error) {
 
 	rawaddr = buf[idType:reqLen]
 
-	if debug {
-		switch buf[idType] {
-		case typeIPv4:
-			host = net.IP(buf[idIP0 : idIP0+net.IPv4len]).String()
-		case typeIPv6:
-			host = net.IP(buf[idIP0 : idIP0+net.IPv6len]).String()
-		case typeDm:
-			host = string(buf[idDm0 : idDm0+buf[idDmLen]])
-		}
-		port := binary.BigEndian.Uint16(buf[reqLen-2 : reqLen])
-		host = net.JoinHostPort(host, strconv.Itoa(int(port)))
+	switch buf[idType] {
+	case typeIPv4:
+		host = net.IP(buf[idIP0 : idIP0+net.IPv4len]).String()
+	case typeIPv6:
+		host = net.IP(buf[idIP0 : idIP0+net.IPv6len]).String()
+	case typeDm:
+		host = string(buf[idDm0 : idDm0+buf[idDmLen]])
 	}
-
+	port := binary.BigEndian.Uint16(buf[reqLen-2 : reqLen])
+	host = net.JoinHostPort(host, strconv.Itoa(int(port)))
 	return
 }
 
@@ -312,6 +313,28 @@ func handleConnection(conn net.Conn) {
 		return
 	}
 
+	mutex.Lock()
+	_, ok := blacklist[addr]
+	mutex.Unlock()
+	if !ok {
+		c, err := net.DialTimeout("tcp", addr, time.Millisecond*800)
+		defer func() {
+			if !closed {
+				c.Close()
+			}
+		}()
+		if err != nil {
+			mutex.Lock()
+			blacklist[addr] = 1
+			mutex.Unlock()
+			err = nil
+		} else {
+			go io.Copy(conn, c)
+			io.Copy(c, conn)
+			closed = true
+			return
+		}
+	}
 	remote, err := createServerConn(rawaddr, addr)
 	if err != nil {
 		if len(servers.srvCipher) > 1 {
@@ -324,7 +347,6 @@ func handleConnection(conn net.Conn) {
 			remote.Close()
 		}
 	}()
-
 	go ss.PipeThenClose(conn, remote)
 	ss.PipeThenClose(remote, conn)
 	closed = true
